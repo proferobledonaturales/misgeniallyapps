@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contador de Visitas Atractivo</title>
+    <!-- Carga de Tailwind CSS para un diseño limpio y responsivo --><script src="https://cdn.tailwindcss.com"></script>
+    <!-- Fuente Inter (más usada en diseños modernos) --><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        /* ======================================================= */
+        /* === ZONA DE PERSONALIZACIÓN DE COLORES (EDITAR AQUÍ)=== */
+        /* ======================================================= */
+        :root {
+            /* 1. Inicio del degradado del fondo. Ejemplo: Rojo vibrante. */
+            --main-color-start: #FF512F;
+            /* 2. Fin del degradado del fondo. Ejemplo: Naranja oscuro. */
+            --main-color-end: #DD2476;
+            /* 3. Color para el texto de estado, borde inferior y acentos. Ejemplo: Blanco/crema claro. */
+            --text-color-status: #FCE4EC;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: transparent; /* Fondo transparente para integración en Genially */
+        }
+
+        /* Degradado de fondo para la tarjeta usando las variables CSS */
+        .gradient-bg {
+            background-image: linear-gradient(135deg, var(--main-color-start) 0%, var(--main-color-end) 100%);
+        }
+
+        /* Animación para el número del contador */
+        @keyframes count-fade-in {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes pulse-once {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.03); }
+            100% { transform: scale(1); }
+        }
+
+        .fade-in {
+            animation: count-fade-in 0.5s ease-out forwards;
+        }
+
+        .pulse-effect {
+            animation: pulse-once 0.3s ease-in-out;
+        }
+
+        /* Estilo para el icono SVG */
+        .icon-fill {
+            fill: #ffffff; /* El icono principal permanece blanco para asegurar contraste */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="counter-card" class="gradient-bg p-8 rounded-2xl shadow-2xl max-w-sm w-full text-center text-white border-b-4 transform transition duration-300 hover:scale-[1.03] hover:shadow-3xl" style="border-color: var(--text-color-status);">
+        <div class="flex flex-col items-center justify-center mb-4">
+            <!-- Icono de Ojo SVG para las visitas --><svg class="w-12 h-12 mb-2 icon-fill" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M12 4.5C7 4.5 2.73 7.61 0 12c2.73 4.39 7 7.5 12 7.5s9.27-3.11 12-7.5c-2.73-4.39-7-7.5-12-7.5zm0 13c-3.13 0-6-2.52-6-5.5s2.87-5.5 6-5.5 6 2.52 6 5.5-2.87 5.5-6 5.5zm0-9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+            </svg>
+            <h1 class="text-2xl font-extrabold tracking-wide">Visitas Totales</h1>
+        </div>
+        <!-- Aquí se mostrará el número de visitas --><div id="count-display" class="text-6xl font-extrabold mt-4 mb-4 drop-shadow-lg fade-in">
+            Cargando...
+        </div>
+        <p id="status-message" class="text-sm opacity-80 h-5" style="color: var(--text-color-status);">
+            Conectando a la base de datos...
+        </p>
+    </div>
+
+    <!-- Script de Firebase (SDK 11.6.1) --><script type="module">
+        // Importaciones de Firebase (necesarias para la conexión y la autenticación)
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, increment, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Establecer el nivel de registro a Debug para seguimiento en consola (útil para depuración)
+        setLogLevel('Debug');
+
+        // Referencias del DOM
+        const countDisplay = document.getElementById('count-display');
+        const statusMessage = document.getElementById('status-message');
+
+        let db;
+        let auth;
+        let appId;
+        let presentationId; // Ahora se inicializa de forma dinámica
+
+        // 1. Configuración y Variables Globales (MANDATORIO)
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        appId = typeof __app_id !== 'undefined' ? __app_id : 'default-genially-id';
+
+        /**
+         * Obtiene el ID único de la URL para diferenciar las presentaciones.
+         * Devuelve un ID único o null si no se encuentra.
+         */
+        function getPresentationIdFromUrl() {
+            const urlParams = new URLSearchParams(window.location.search);
+            // El usuario debe pasar un parámetro '?id=MiNombreDeGenially'
+            return urlParams.get('id');
+        }
+
+        /**
+         * Construye la ruta al documento del contador en la colección pública.
+         */
+        const getCounterDocRef = (db) => {
+            const publicCollectionPath = `/artifacts/${appId}/public/data/view_counters`;
+            // Utilizamos el ID obtenido de la URL para la ruta
+            return doc(db, publicCollectionPath, presentationId);
+        };
+
+        /**
+         * Inicializa Firebase, autentica al usuario e inicia el contador.
+         */
+        async function initializeCounter() {
+            // Asignar el ID de la URL
+            presentationId = getPresentationIdFromUrl();
+
+            if (!presentationId) {
+                // Si falta el ID, mostramos la advertencia y no inicializamos Firebase
+                countDisplay.textContent = "ID?";
+                statusMessage.textContent = "Error: Añade ?id=TU_ID_UNICO a la URL de inserción.";
+                document.getElementById('counter-card').style.borderColor = '#FF0000'; // Borde rojo para advertir
+                document.getElementById('counter-card').classList.add('bg-red-600');
+                document.getElementById('counter-card').classList.remove('gradient-bg');
+                return;
+            }
+
+            try {
+                // 2. Inicializar Firebase
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // 3. Autenticación (con token o anónima)
+                await new Promise(resolve => {
+                    onAuthStateChanged(auth, async (user) => {
+                        if (!user) {
+                            try {
+                                if (initialAuthToken) {
+                                    await signInWithCustomToken(auth, initialAuthToken);
+                                } else {
+                                    await signInAnonymously(auth);
+                                }
+                            } catch (error) {
+                                console.error("Error al autenticar:", error);
+                                statusMessage.textContent = "Error de autenticación.";
+                                return;
+                            }
+                        }
+                        resolve();
+                    });
+                });
+
+                statusMessage.textContent = "Contando visitas para: " + presentationId;
+
+                // 4. Iniciar la lógica del contador
+                await incrementCounter();
+                listenForUpdates();
+
+            } catch (error) {
+                console.error("Error crítico durante la inicialización:", error);
+                statusMessage.textContent = "Error al iniciar el sistema.";
+                countDisplay.textContent = "❌";
+            }
+        }
+
+        /**
+         * Incrementa el contador en Firestore.
+         */
+        async function incrementCounter() {
+            try {
+                const counterRef = getCounterDocRef(db);
+                await setDoc(counterRef, {
+                    count: increment(1),
+                    lastVisit: new Date().toISOString(),
+                    presentationId: presentationId // Guardamos el ID por si acaso
+                }, { merge: true });
+
+            } catch (error) {
+                console.error("Error al incrementar el contador:", error);
+                statusMessage.textContent = "Error al actualizar la visita.";
+            }
+        }
+
+        let previousCount = 0; // Para la animación de pulso
+
+        /**
+         * Escucha los cambios en tiempo real del contador y actualiza la UI.
+         */
+        function listenForUpdates() {
+            const counterRef = getCounterDocRef(db);
+
+            onSnapshot(counterRef, (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                    const data = docSnapshot.data();
+                    const currentCount = data.count || 0;
+
+                    // Aplicar animación de pulso si el contador realmente ha cambiado
+                    if (currentCount !== previousCount) {
+                        countDisplay.classList.remove('fade-in', 'pulse-effect');
+                        void countDisplay.offsetWidth;
+                        countDisplay.classList.add('pulse-effect');
+                        previousCount = currentCount;
+                    }
+
+                    countDisplay.textContent = currentCount.toLocaleString('es-ES');
+                    statusMessage.textContent = `Última visita: ${new Date(data.lastVisit).toLocaleTimeString()} | ID: ${presentationId}`;
+                } else {
+                    countDisplay.textContent = "1";
+                    statusMessage.textContent = `Primer conteo registrado para ID: ${presentationId}`;
+                    previousCount = 1;
+                }
+            }, (error) => {
+                console.error("Error de onSnapshot:", error);
+                statusMessage.textContent = "Error de conexión en tiempo real.";
+                countDisplay.textContent = "Error";
+            });
+        }
+
+        // Iniciar la extensión al cargar la ventana
+        window.onload = () => {
+            // 1. Verificar configuración crítica ANTES de inicializar
+            if (!firebaseConfig) {
+                console.error("Firebase Configuración no encontrada.");
+                statusMessage.textContent = "Error: Configuración de Firebase faltante.";
+                countDisplay.textContent = "❌";
+                return;
+            }
+            initializeCounter();
+        };
+
+    </script>
+</body>
+</html>
